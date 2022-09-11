@@ -80,11 +80,13 @@ pub enum Error {
     Uri(#[from] hyper::http::uri::InvalidUri),
     // server
     #[error("response status code error: {0:?}")]
-    StatusCode((Parts, Body)),
+    StatusCode((Parts, String)),
     #[error("response body encoding error: {0}")]
     Encoding(#[from] std::string::FromUtf8Error),
     #[error("response body deserialize error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("unknown error: {0}")]
+    Unknown(String),
 }
 
 /// Wrapper for the `Result` type with an [`Error`](Error).
@@ -170,9 +172,16 @@ impl Client<(), Body> {
             let mut connector = hyper::client::HttpConnector::new();
             connector.set_connect_timeout(Some(Duration::from_secs(2)));
             connector.set_keepalive(Some(keepalive));
-            hyper::Client::builder().pool_idle_timeout(keepalive).build(connector)
+            hyper::Client::builder()
+                .pool_idle_timeout(keepalive)
+                .build(connector)
         };
-        Client { inner, env: Env::init(), config: Default::default(), cache: Default::default() }
+        Client {
+            inner,
+            env: Env::init(),
+            config: Default::default(),
+            cache: Default::default(),
+        }
     }
 
     /// Create a new client using the passed http client.
@@ -199,7 +208,9 @@ where
         path_and_query: PathAndQuery,
     ) -> impl Future<Output = crate::Result<(Parts, Body)>> + Send + 'static {
         let host = self.env.metadata_host.clone();
-        let mut parts = host.unwrap_or_else(|| self.config.metadata_ip.clone()).into_parts();
+        let mut parts = host
+            .unwrap_or_else(|| self.config.metadata_ip.clone())
+            .into_parts();
         parts.scheme = Some(self.config.schema.clone());
         parts.path_and_query = Some(path_and_query);
         let uri = Uri::from_parts(parts).unwrap();
@@ -214,7 +225,20 @@ where
             let parts = fut.await?.into_parts();
             match parts.0.status {
                 StatusCode::OK => Ok(parts),
-                _ => Err(Error::StatusCode(parts)),
+                _ => {
+                    let (p, b) = parts;
+                    let body_bytes = match hyper::body::to_bytes(b).await {
+                        Ok(b) => b,
+                        Err(_) => {
+                            return Err(Error::Unknown(
+                                "error here -> hyper::body::to_bytes(b).await".to_string(),
+                            ));
+                        }
+                    };
+                    let txt = String::from_utf8(body_bytes.to_vec()).unwrap();
+                    // : String = b.data().await.unwrap().unwrap().to;
+                    Err(Error::StatusCode((p, txt)))
+                }
             }
         }
     }
@@ -343,12 +367,17 @@ where
 
     /// Get the instance's primary internal IP address.
     pub async fn internal_ip(&self) -> crate::Result<String> {
-        self.get(path!("instance/network-interfaces/0/ip"), true).await
+        self.get(path!("instance/network-interfaces/0/ip"), true)
+            .await
     }
 
     /// Get the instance's primary external (public) IP address.
     pub async fn external_ip(&self) -> crate::Result<String> {
-        self.get(path!("instance/network-interfaces/0/access-configs/0/external-ip"), true).await
+        self.get(
+            path!("instance/network-interfaces/0/access-configs/0/external-ip"),
+            true,
+        )
+        .await
     }
 
     /// Get service account's email.
@@ -405,12 +434,14 @@ where
 
     /// Get the value of the provided VM instance attribute.
     pub async fn instance_attr(&self, attr: impl AsRef<str>) -> crate::Result<String> {
-        self.get(path!("instance/attributes/{}", attr.as_ref())?, false).await
+        self.get(path!("instance/attributes/{}", attr.as_ref())?, false)
+            .await
     }
 
     /// Get the value of the provided project attribute.
     pub async fn project_attr(&self, attr: impl AsRef<str>) -> crate::Result<String> {
-        self.get(path!("project/attributes/{}", attr.as_ref())?, false).await
+        self.get(path!("project/attributes/{}", attr.as_ref())?, false)
+            .await
     }
 
     /// Get the service account scopes for the given account.
