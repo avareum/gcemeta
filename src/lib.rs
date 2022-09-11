@@ -215,6 +215,8 @@ where
         parts.path_and_query = Some(path_and_query);
         let uri = Uri::from_parts(parts).unwrap();
 
+        println!("xxxx -> log uri: {}", uri);
+
         let req = Request::get(uri)
             .header(&self.config.flavor_name, &self.config.flavor_value)
             .header(USER_AGENT, &self.config.user_agent)
